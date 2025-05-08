@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ChevronRight, Play, Users, Trophy, Calendar } from 'lucide-react-native';
@@ -8,45 +8,84 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useRouter } from 'expo-router';
 import { PushupCounter } from '@/components/PushupCounter';
+import {
+  getDailyGoal,
+  getCurrentPushups,
+  getTodaysRank,
+  getActiveChallenge,
+  getFriendsActivity,
+  getUserProfile,
+} from '../services/homeApi';
+import type { ReactNode } from 'react';
 
-// Mock data for the home screen
-const DAILY_GOAL = 50;
-const CURRENT_PUSHUPS = 32;
-const TODAYS_RANK = 3;
-const ACTIVE_CHALLENGE = {
-  name: "Weekly Warrior",
-  participants: 24,
-  daysLeft: 3,
-  progress: 68
-};
-const FRIENDS_ACTIVITY = [
-  {
-    id: '1',
-    name: 'Sarah Johnson',
-    avatar: 'https://images.pexels.com/photos/733872/pexels-photo-733872.jpeg?auto=compress&cs=tinysrgb&w=96',
-    pushups: 45,
-    time: '10 min ago'
-  },
-  {
-    id: '2',
-    name: 'Mike Chen',
-    avatar: 'https://images.pexels.com/photos/614810/pexels-photo-614810.jpeg?auto=compress&cs=tinysrgb&w=96',
-    pushups: 60,
-    time: '32 min ago'
-  }
-];
+interface ActiveChallenge {
+  name: string;
+  participants: number;
+  daysLeft: number;
+  progress: number;
+}
+
+interface FriendActivity {
+  id: string;
+  name: string;
+  avatar: string;
+  pushups: number;
+  time: string;
+}
+
+interface UserProfile {
+  name: string;
+  avatar: string;
+}
 
 export default function HomeScreen() {
   const router = useRouter();
-  
+  const [loading, setLoading] = useState(true);
+  const [dailyGoal, setDailyGoal] = useState(0);
+  const [currentPushups, setCurrentPushups] = useState(0);
+  const [todaysRank, setTodaysRank] = useState(0);
+  const [activeChallenge, setActiveChallenge] = useState<ActiveChallenge | null>(null);
+  const [friendsActivity, setFriendsActivity] = useState<FriendActivity[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
+  useEffect(() => {
+    async function fetchData() {
+      setLoading(true);
+      const [goal, pushups, rank, challenge, friends, user] = await Promise.all([
+        getDailyGoal(),
+        getCurrentPushups(),
+        getTodaysRank(),
+        getActiveChallenge(),
+        getFriendsActivity(),
+        getUserProfile(),
+      ]);
+      setDailyGoal(goal);
+      setCurrentPushups(pushups);
+      setTodaysRank(rank);
+      setActiveChallenge(challenge);
+      setFriendsActivity(friends);
+      setUserProfile(user);
+      setLoading(false);
+    }
+    fetchData();
+  }, []);
+
   const startWorkout = () => {
     router.push('/workout');
   };
-  
+
   const viewLeaderboard = () => {
     router.push('/leaderboard');
   };
-  
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Theme.colors.background }}>
+        <ActivityIndicator size="large" color={Theme.colors.primary} />
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -57,11 +96,11 @@ export default function HomeScreen() {
           <View style={styles.welcomeSection}>
             <View>
               <Text style={styles.welcomeText}>Welcome back,</Text>
-              <Text style={styles.nameText}>Bamba</Text>
+              <Text style={styles.nameText}>{userProfile?.name ?? ''}</Text>
             </View>
             <TouchableOpacity onPress={() => router.push('/profile')}>
               <Image
-                source={{ uri: 'https://media.licdn.com/dms/image/v2/D4D03AQHtMZgj1NTL7Q/profile-displayphoto-shrink_800_800/B4DZVWvr1QGkAk-/0/1740917096640?e=1752105600&v=beta&t=_r4gyBpQ4ZiRAsOwQdkVzzRooIYSwGVV8qOo2rfcvfw' }}
+                source={{ uri: userProfile?.avatar ?? '' }}
                 style={styles.profileImage}
               />
             </TouchableOpacity>
@@ -72,7 +111,7 @@ export default function HomeScreen() {
               <Text style={styles.statLabel}>Today's Rank</Text>
               <View style={styles.statValueContainer}>
                 <Trophy size={18} color={Theme.colors.secondary} />
-                <Text style={styles.statValue}>{TODAYS_RANK}</Text>
+                <Text style={styles.statValue}>{todaysRank}</Text>
               </View>
             </View>
             
@@ -93,7 +132,7 @@ export default function HomeScreen() {
               <Text style={styles.dailyGoalSubtitle}>12 hours left</Text>
             </View>
             
-            <PushupCounter count={CURRENT_PUSHUPS} maxCount={DAILY_GOAL} showAnimation={false} />
+            <PushupCounter count={currentPushups} maxCount={dailyGoal} showAnimation={false} />
             
             <Button
               title="Start Pushup Challenge"
@@ -107,36 +146,38 @@ export default function HomeScreen() {
         </LinearGradient>
         
         <View style={styles.content}>
-          <Card 
-            title="Active Challenge" 
-            subtitle={`${ACTIVE_CHALLENGE.daysLeft} days remaining`}
-            style={styles.challengeCard}
-          >
-            <View style={styles.challengeContent}>
-              <Text style={styles.challengeName}>{ACTIVE_CHALLENGE.name}</Text>
-              <View style={styles.challengeStats}>
-                <View style={styles.challengeStat}>
-                  <Users size={18} color={Theme.colors.primary} />
-                  <Text style={styles.challengeStatText}>
-                    {ACTIVE_CHALLENGE.participants} participants
-                  </Text>
-                </View>
-                <View style={styles.challengeProgress}>
-                  <View style={styles.progressTrack}>
-                    <View 
-                      style={[
-                        styles.progressBar,
-                        { width: `${ACTIVE_CHALLENGE.progress}%` }
-                      ]} 
-                    />
+          {activeChallenge && (
+            <Card 
+              title="Active Challenge" 
+              subtitle={`${activeChallenge.daysLeft} days remaining`}
+              style={styles.challengeCard}
+            >
+              <View style={styles.challengeContent}>
+                <Text style={styles.challengeName}>{activeChallenge.name}</Text>
+                <View style={styles.challengeStats}>
+                  <View style={styles.challengeStat}>
+                    <Users size={18} color={Theme.colors.primary} />
+                    <Text style={styles.challengeStatText}>
+                      {activeChallenge.participants} participants
+                    </Text>
                   </View>
-                  <Text style={styles.progressText}>
-                    {ACTIVE_CHALLENGE.progress}% complete
-                  </Text>
+                  <View style={styles.challengeProgress}>
+                    <View style={styles.progressTrack}>
+                      <View 
+                        style={[
+                          styles.progressBar,
+                          { width: `${activeChallenge.progress}%` }
+                        ]} 
+                      />
+                    </View>
+                    <Text style={styles.progressText}>
+                      {activeChallenge.progress}% complete
+                    </Text>
+                  </View>
                 </View>
               </View>
-            </View>
-          </Card>
+            </Card>
+          )}
           
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Friend Activity</Text>
@@ -149,7 +190,7 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
           
-          {FRIENDS_ACTIVITY.map(friend => (
+          {friendsActivity.map(friend => (
             <View key={friend.id} style={styles.activityItem}>
               <Image source={{ uri: friend.avatar }} style={styles.activityAvatar} />
               <View style={styles.activityInfo}>
