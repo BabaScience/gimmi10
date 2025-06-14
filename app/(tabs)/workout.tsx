@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import type { CameraType } from 'expo-camera';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Camera, useCameraPermissions, type CameraType } from 'expo-camera';
+import * as tf from '@tensorflow/tfjs';
+import * as poseDetection from '@tensorflow-models/pose-detection';
+import Svg, { Circle, Line } from 'react-native-svg';
 import { ArrowLeft, Camera as CameraIcon, RotateCcw, CircleCheck as CheckCircle2 } from 'lucide-react-native';
 import { Theme } from '@/constants/Theme';
 import { Button } from '@/components/ui/Button';
@@ -33,6 +35,11 @@ export default function WorkoutScreen() {
   const [isTimerActive, setIsTimerActive] = useState(false);
   const timerRef = useRef<number | null>(null);
   const isMounted = useRef(false);
+  const cameraRef = useRef<Camera | null>(null);
+  const [poses, setPoses] = useState<poseDetection.Pose[]>([]);
+  const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
+  const [tfReady, setTfReady] = useState(false);
+  const pushupStage = useRef<'up' | 'down'>('up');
   
   useEffect(() => {
     isMounted.current = true;
@@ -50,22 +57,62 @@ export default function WorkoutScreen() {
   }, []);
   
   useEffect(() => {
-    let pushupInterval: number | null = null;
-    
-    if (isPushupSessionActive && !isSessionComplete && isMounted.current) {
-      pushupInterval = setInterval(() => {
-        if (Math.random() > 0.6 && isMounted.current) {
-          setPushupCount(prev => prev + 1);
-        }
-      }, 2000)
-    }
-    
-    return () => {
-      if (pushupInterval) {
-        clearInterval(pushupInterval);
+    (async () => {
+      await tf.ready();
+      await tf.setBackend('rn-webgl');
+      detectorRef.current = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+      );
+      setTfReady(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const detectPoses = async () => {
+      if (
+        !isPushupSessionActive ||
+        !detectorRef.current ||
+        !cameraRef.current ||
+        !tfReady ||
+        isCancelled
+      ) {
+        return;
       }
+
+      const loop = async () => {
+        if (!isPushupSessionActive || !detectorRef.current || isCancelled) {
+          return;
+        }
+
+        const imageTensor = await cameraRef.current?.takePictureAsync({ skipProcessing: true });
+        if (imageTensor && detectorRef.current) {
+          const imgB64 = await fetch(imageTensor.uri).then(res => res.blob());
+          const decoded = await tf.decodeImage(await imgB64.arrayBuffer());
+          const est = await detectorRef.current.estimatePoses(decoded as any);
+          setPoses(est);
+          if (est[0]) {
+            evaluatePushup(est[0]);
+          }
+          tf.dispose(decoded);
+        }
+
+        if (!isCancelled) {
+          setTimeout(loop, 300);
+        }
+      };
+
+      loop();
     };
-  }, [isPushupSessionActive, isSessionComplete]);
+
+    detectPoses();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isPushupSessionActive, tfReady]);
   
   useEffect(() => {
     if (isTimerActive && isMounted.current) {
@@ -115,6 +162,75 @@ export default function WorkoutScreen() {
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const evaluatePushup = (pose: poseDetection.Pose) => {
+    const getPoint = (name: string) => pose.keypoints.find(k => k.name === name);
+    const nose = getPoint('nose');
+    const leftShoulder = getPoint('left_shoulder');
+    const rightShoulder = getPoint('right_shoulder');
+
+    if (!nose || !leftShoulder || !rightShoulder) return;
+
+    const shoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+    const diff = nose.y - shoulderY;
+
+    if (pushupStage.current === 'up' && diff > 40) {
+      pushupStage.current = 'down';
+    }
+
+    if (pushupStage.current === 'down' && diff < 10) {
+      pushupStage.current = 'up';
+      setPushupCount(c => c + 1);
+    }
+  };
+
+  const SKELETON_CONNECTIONS: [string, string][] = [
+    ['left_shoulder', 'right_shoulder'],
+    ['left_shoulder', 'left_elbow'],
+    ['left_elbow', 'left_wrist'],
+    ['right_shoulder', 'right_elbow'],
+    ['right_elbow', 'right_wrist'],
+    ['left_shoulder', 'left_hip'],
+    ['right_shoulder', 'right_hip'],
+    ['left_hip', 'right_hip'],
+    ['left_hip', 'left_knee'],
+    ['left_knee', 'left_ankle'],
+    ['right_hip', 'right_knee'],
+    ['right_knee', 'right_ankle'],
+  ];
+
+  const renderPoseSkeleton = (pose: poseDetection.Pose, idx: number) => {
+    const keypoints: any = {};
+    pose.keypoints.forEach(k => {
+      keypoints[k.name] = k;
+    });
+
+    return (
+      <React.Fragment key={idx}>
+        {SKELETON_CONNECTIONS.map(([a, b], i) => {
+          const kp1 = keypoints[a];
+          const kp2 = keypoints[b];
+          if (!kp1 || !kp2 || kp1.score < 0.3 || kp2.score < 0.3) return null;
+          return (
+            <Line
+              key={`l-${i}`}
+              x1={kp1.x}
+              y1={kp1.y}
+              x2={kp2.x}
+              y2={kp2.y}
+              stroke="#00FF00"
+              strokeWidth="2"
+            />
+          );
+        })}
+        {pose.keypoints.map((kp, i) =>
+          kp.score > 0.3 ? (
+            <Circle key={`c-${i}`} cx={kp.x} cy={kp.y} r="3" fill="#FF0000" />
+          ) : null
+        )}
+      </React.Fragment>
+    );
   };
   
   if (!permission) {
@@ -201,12 +317,13 @@ export default function WorkoutScreen() {
       <StatusBar style="light" />
       
       {Platform.OS !== 'web' ? (
-        <CameraView 
+        <Camera
+          ref={cameraRef}
           style={styles.camera}
-          facing={facing}
+          type={facing}
         >
           {renderCameraContent()}
-        </CameraView>
+        </Camera>
       ) : (
         <View style={styles.webFallback}>
           <CameraIcon size={64} color={Theme.colors.primary} />
@@ -281,7 +398,7 @@ export default function WorkoutScreen() {
             </>
           )}
         </SafeAreaView>
-        
+
         {isPushupSessionActive && (
           <View style={styles.positionGuide}>
             <View style={styles.positionGuideBoxes}>
@@ -289,6 +406,13 @@ export default function WorkoutScreen() {
             </View>
             <Text style={styles.positionGuideText}>Position your body within the frame</Text>
           </View>
+        )}
+
+        {tfReady && isPushupSessionActive && (
+          <Svg style={StyleSheet.absoluteFill} viewBox={`0 0 ${SCREEN_WIDTH} ${SCREEN_HEIGHT}`}
+            pointerEvents="none">
+            {poses.map((pose, idx) => renderPoseSkeleton(pose, idx))}
+          </Svg>
         )}
       </>
     );
